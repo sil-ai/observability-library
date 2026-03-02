@@ -15,17 +15,20 @@ class LokiHandler(logging.Handler):
         url: str,
         labels: Optional[Dict[str, str]] = None,
         timeout: int = 5,
+        auth_token: Optional[str] = None,
     ):
         """
         Args:
             url: Loki endpoint URL (e.g., http://localhost:3100/loki/api/v1/push)
             labels: Dictionary of labels for Loki (e.g., {"app": "my-app", "env": "prod"})
             timeout: Timeout for HTTP requests in seconds
+            auth_token: Bearer token for authentication (optional)
         """
         super().__init__()
         self.url = url
         self.labels = labels or {}
         self.timeout = timeout
+        self.auth_token = auth_token
 
     def emit(self, record: logging.LogRecord) -> None:
         """
@@ -58,7 +61,7 @@ class LokiHandler(logging.Handler):
         Sends the log to Loki via HTTP.
         """
         labels_str = ",".join([f'{k}="{v}"' for k, v in self.labels.items()])
-        
+
         payload = {
             "streams": [
                 {
@@ -78,7 +81,10 @@ class LokiHandler(logging.Handler):
         }
 
         headers = {"Content-Type": "application/json"}
-        
+
+        if self.auth_token:
+            headers["Authorization"] = f"Bearer {self.auth_token}"
+
         try:
             response = requests.post(
                 self.url,
@@ -87,5 +93,5 @@ class LokiHandler(logging.Handler):
                 timeout=self.timeout
             )
             response.raise_for_status()
-        except requests.RequestException:
-            pass
+        except requests.RequestException as e:
+            logging.error(f"Failed to send log to Loki: {e}")
