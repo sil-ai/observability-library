@@ -28,46 +28,18 @@ class LokiLoggerLabels(BaseModel):
         min_length=2,
         max_length=50,
         description="Project or application name (e.g., 'ecommerce', 'crm', 'analytics')",
-        examples=["ecommerce", "crm", "sil-translation"]
+        examples=["aero-api", "aero-django-app", "aqua-api"]
     )
 
-    environment: Literal["production", "staging", "development", "qa", "test"] = Field(
+    environment: Literal["release", "main",] = Field(
         ...,
         description="Deployment environment",
-        examples=["production", "development"]
+        examples=["release", "main"]
     )
 
-    service: str = Field(
-        ...,
-        min_length=2,
-        max_length=50,
-        description="Service or microservice name (e.g., 'api', 'worker', 'frontend')",
-        examples=["api", "worker", "payment-gateway"]
-    )
 
-    version: str = Field(
-        ...,
-        pattern=r"^v?\d+\.\d+(\.\d+)?(-[a-zA-Z0-9]+)?$",
-        description="Application version (semantic versioning: v1.2.3 or 1.2.3-beta)",
-        examples=["v1.0.0", "2.3.1", "1.0.0-beta"]
-    )
 
-    # Optional fields for additional context
-    namespace: Optional[str] = Field(
-        None,
-        max_length=50,
-        description="Kubernetes namespace or logical grouping",
-        examples=["default", "production", "staging"]
-    )
-
-    host: Optional[str] = Field(
-        None,
-        max_length=100,
-        description="Hostname, pod name, or instance identifier",
-        examples=["server-01", "pod-abc123", "ip-10-0-1-50"]
-    )
-
-    @field_validator("project", "service")
+    @field_validator("project")
     @classmethod
     def lowercase_alphanumeric(cls, v: str) -> str:
         """Ensure project and service names are lowercase and alphanumeric with hyphens."""
@@ -78,11 +50,6 @@ class LokiLoggerLabels(BaseModel):
             )
         return cleaned
 
-    @field_validator("version")
-    @classmethod
-    def normalize_version(cls, v: str) -> str:
-        """Normalize version format."""
-        return v.strip().lower()
 
     def to_dict(self) -> dict:
         """
