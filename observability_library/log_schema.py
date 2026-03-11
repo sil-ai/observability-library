@@ -31,10 +31,10 @@ class LokiLoggerLabels(BaseModel):
         examples=["aero-api", "aero-django-app", "aqua-api"]
     )
 
-    environment: Literal["release", "main",] = Field(
+    environment: Literal["release", "main", "development"] = Field(
         ...,
         description="Deployment environment",
-        examples=["release", "main"]
+        examples=["release", "main", "development"]
     )
 
 
