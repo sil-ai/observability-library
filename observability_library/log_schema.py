@@ -37,7 +37,7 @@ class LokiLoggerLabels(BaseModel):
         examples=["release", "main", "development"]
     )
 
-    host: Optional[str] = Field(
+    container_id: Optional[str] = Field(
         None,
         max_length=100,
         description="Hostname or instance identifier (e.g., 'host-123', 'instance-1')"
