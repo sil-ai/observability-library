@@ -47,13 +47,9 @@ pip install git+https://github.com/aquintero/observability-library.git
 - `timeout` (optional): HTTP request timeout in seconds (default: 5)
 - `auth_token` (optional): Bearer token for authentication
 
-## License
-
-MIT
-
 **High memory usage**
 
-Solution: Call `await loki_handler.close()` on shutdown.
+Solution: Call `loki_handler.close()` on shutdown.
 
 ## License
 

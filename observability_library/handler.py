@@ -118,10 +118,23 @@ class LokiHandler(logging.Handler):
             headers["Authorization"] = f"Bearer {self.auth_token}"
         return headers
 
-    async def close(self) -> None:
-        """Close the aiohttp session. Call this when shutting down."""
+    def close(self) -> None:
+        """
+        Close the aiohttp session synchronously.
+
+        Attempts to close the session if an event loop is running.
+        Schedules the close operation without waiting for completion.
+
+        This method is compatible with Python's logging.shutdown() which
+        expects a synchronous close() method.
+        """
         if self._session and not self._session.closed:
-            await self._session.close()
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._session.close())
+            except RuntimeError:
+                # No event loop running, cannot close async session
+                pass
 
     def __del__(self):
         """Cleanup resources on deletion."""
