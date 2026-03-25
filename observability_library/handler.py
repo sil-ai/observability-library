@@ -64,9 +64,6 @@ class LokiHandler(logging.Handler):
             "message": self.format(record),
         }
 
-        if hasattr(record, "extra"):
-            log_data.update(record.extra)
-
         return log_data
 
     async def async_send_to_loki(self, log_entry: Dict) -> None:
