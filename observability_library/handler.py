@@ -6,6 +6,15 @@ from typing import Dict, Optional
 import aiohttp
 
 
+_STANDARD_RECORD_ATTRS = {
+    "name", "msg", "args", "created", "relativeCreated", "exc_info",
+    "exc_text", "stack_info", "lineno", "funcName", "pathname",
+    "filename", "module", "thread", "threadName", "process",
+    "processName", "levelname", "levelno", "message", "msecs",
+    "taskName",
+}
+
+
 class LokiHandler(logging.Handler):
     """
     Async logging handler to send logs to Loki/Grafana.
@@ -55,7 +64,7 @@ class LokiHandler(logging.Handler):
 
     def format_record(self, record: logging.LogRecord) -> Dict:
         """
-        Formats the log record for Loki.
+        Formats the log record for Loki, including any extra fields.
         """
         log_data = {
             "timestamp": str(int(time.time() * 1_000_000_000)),
@@ -63,6 +72,10 @@ class LokiHandler(logging.Handler):
             "logger": record.name,
             "message": self.format(record),
         }
+
+        for key, value in record.__dict__.items():
+            if key not in _STANDARD_RECORD_ATTRS and not key.startswith("_"):
+                log_data[key] = value
 
         return log_data
 
@@ -92,19 +105,16 @@ class LokiHandler(logging.Handler):
             logging.error(f"Unexpected error sending log to Loki: {e}")
 
     def _build_payload(self, log_entry: Dict) -> Dict:
-        """Builds the Loki payload structure."""
+        """Builds the Loki payload structure, including extra fields."""
+        timestamp = log_entry.pop("timestamp")
         return {
             "streams": [
                 {
                     "stream": self.labels,
                     "values": [
                         [
-                            log_entry["timestamp"],
-                            json.dumps({
-                                "level": log_entry["level"],
-                                "logger": log_entry["logger"],
-                                "message": log_entry["message"],
-                            })
+                            timestamp,
+                            json.dumps(log_entry, default=str),
                         ]
                     ]
                 }
