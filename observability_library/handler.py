@@ -14,6 +14,11 @@ _STANDARD_LOGRECORD_ATTRS = frozenset({
 })
 
 
+# Keys we always set ourselves on the JSON body. Allowlisted record fields
+# with these names would silently shadow them — refuse them at construction.
+_RESERVED_BODY_KEYS = frozenset({"level", "logger", "message"})
+
+
 DEFAULT_EXTRA_ALLOWLIST = frozenset({
     "trace_id", "span_id", "trace_flags",
 })
@@ -54,12 +59,19 @@ class LokiHandler(logging.Handler):
         self.auth_token = auth_token
 
         configured = frozenset(extra_allowlist or ())
-        overlap = configured & _STANDARD_LOGRECORD_ATTRS
-        if overlap:
+        standard_overlap = configured & _STANDARD_LOGRECORD_ATTRS
+        if standard_overlap:
             raise ValueError(
                 "extra_allowlist cannot include standard LogRecord attributes "
-                f"({sorted(overlap)}); these would forward unformatted "
+                f"({sorted(standard_overlap)}); these would forward unformatted "
                 "internals (e.g. raw `args` may carry secrets)."
+            )
+        reserved_overlap = configured & _RESERVED_BODY_KEYS
+        if reserved_overlap:
+            raise ValueError(
+                "extra_allowlist cannot include reserved body keys "
+                f"({sorted(reserved_overlap)}); these would let callers spoof "
+                "level/logger/message via `extra={...}`."
             )
         self.extra_allowlist = DEFAULT_EXTRA_ALLOWLIST | configured
 

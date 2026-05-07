@@ -1,9 +1,9 @@
 """Bridge OpenTelemetry trace context onto Python `logging` records.
 
 Adding a `TraceContextFilter` to a logger (or to a specific handler like
-`LokiHandler`) stamps `trace_id` and `span_id` onto every record while a
-span is active. Downstream tools — Grafana derived fields in particular —
-can then jump from a log line to its trace and back.
+`LokiHandler`) stamps `trace_id`, `span_id`, and `trace_flags` onto every
+record while a span is active. Downstream tools — Grafana derived fields
+in particular — can then jump from a log line to its trace and back.
 
 The filter is a no-op when no span is current and when the OTel API
 isn't installed, so adding it is safe in environments that don't yet

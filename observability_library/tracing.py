@@ -155,13 +155,19 @@ def setup_tracer_provider(
                     "deployments where the network is the trust boundary."
                 )
 
-        from opentelemetry import trace
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
-            OTLPSpanExporter,
-        )
-        from opentelemetry.sdk.resources import Resource
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        try:
+            from opentelemetry import trace
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+                OTLPSpanExporter,
+            )
+            from opentelemetry.sdk.resources import Resource
+            from opentelemetry.sdk.trace import TracerProvider
+            from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        except ImportError as e:
+            raise TracingConfigurationError(
+                "OpenTelemetry packages are not installed. "
+                "Install with `pip install observability-library[tracing]`."
+            ) from e
 
         resource_attrs: Dict[str, Any] = dict(extra_resource_attributes or {})
         resource_attrs["service.name"] = service_name

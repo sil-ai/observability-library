@@ -79,6 +79,17 @@ def test_extra_allowlist_rejects_overlap_with_standard_attrs():
         LokiHandler(url="http://loki/push", extra_allowlist={"args", "msg"})
 
 
+def test_extra_allowlist_rejects_reserved_body_keys():
+    # Without this guard, `logger.info(..., extra={"level": "DEBUG"})` would
+    # silently overwrite the body's "level" field set from record.levelname,
+    # letting callers spoof severity. (`message` is already blocked by the
+    # standard-LogRecord-attrs check, since logging sets that attribute too.)
+    with pytest.raises(ValueError, match="reserved body keys"):
+        LokiHandler(url="http://loki/push", extra_allowlist={"level"})
+    with pytest.raises(ValueError, match="reserved body keys"):
+        LokiHandler(url="http://loki/push", extra_allowlist={"logger"})
+
+
 def test_send_to_loki_posts_correct_url_and_content_type():
     handler = LokiHandler(url="http://loki/push", labels={"app": "x"})
     payload = handler.build_payload(_make_record())
