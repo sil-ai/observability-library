@@ -1,13 +1,31 @@
-import logging
 import json
+import logging
 import time
-from typing import Dict, Optional
+from typing import Dict, Iterable, Optional
+
 import requests
 
 
+_STANDARD_LOGRECORD_ATTRS = frozenset({
+    "args", "asctime", "created", "exc_info", "exc_text", "filename",
+    "funcName", "levelname", "levelno", "lineno", "message", "module",
+    "msecs", "msg", "name", "pathname", "process", "processName",
+    "relativeCreated", "stack_info", "taskName", "thread", "threadName",
+})
+
+
+DEFAULT_EXTRA_ALLOWLIST = frozenset({
+    "trace_id", "span_id", "trace_flags",
+})
+
+
 class LokiHandler(logging.Handler):
-    """
-    Logging handler to send logs to Loki/Grafana.
+    """Logging handler that ships records to Loki as structured JSON.
+
+    Extra fields attached to a LogRecord (via `logger.info(..., extra={...})`
+    or via a `logging.Filter`) are forwarded as JSON fields, but only if they
+    appear in `extra_allowlist`. The default allowlist covers OTel correlation
+    fields; extend it to permit additional safe application fields.
     """
 
     def __init__(
@@ -16,72 +34,44 @@ class LokiHandler(logging.Handler):
         labels: Optional[Dict[str, str]] = None,
         timeout: int = 5,
         auth_token: Optional[str] = None,
+        extra_allowlist: Optional[Iterable[str]] = None,
     ):
-        """
-        Args:
-            url: Loki endpoint URL (e.g., http://localhost:3100/loki/api/v1/push)
-            labels: Dictionary of labels for Loki (e.g., {"app": "my-app", "env": "prod"})
-            timeout: Timeout for HTTP requests in seconds
-            auth_token: Bearer token for authentication (optional)
-        """
         super().__init__()
         self.url = url
         self.labels = labels or {}
         self.timeout = timeout
         self.auth_token = auth_token
+        self.extra_allowlist = DEFAULT_EXTRA_ALLOWLIST | frozenset(extra_allowlist or ())
 
     def emit(self, record: logging.LogRecord) -> None:
-        """
-        Sends a log record to Loki.
-        """
         try:
-            log_entry = self.format_record(record)
-            self.send_to_loki(log_entry)
+            payload = self.build_payload(record)
+            self.send_to_loki(payload)
         except Exception:
             self.handleError(record)
 
-    def format_record(self, record: logging.LogRecord) -> Dict:
-        """
-        Formats the log record for Loki.
-        """
-        log_data = {
-            "timestamp": str(int(time.time() * 1_000_000_000)),
+    def build_payload(self, record: logging.LogRecord) -> Dict:
+        body = {
             "level": record.levelname,
             "logger": record.name,
             "message": self.format(record),
         }
+        for key in self.extra_allowlist:
+            value = getattr(record, key, None)
+            if value is not None:
+                body[key] = value
 
-        if hasattr(record, "extra"):
-            log_data.update(record.extra)
-
-        return log_data
-
-    def send_to_loki(self, log_entry: Dict) -> None:
-        """
-        Sends the log to Loki via HTTP.
-        """
-        labels_str = ",".join([f'{k}="{v}"' for k, v in self.labels.items()])
-
-        payload = {
+        return {
             "streams": [
                 {
                     "stream": self.labels,
-                    "values": [
-                        [
-                            log_entry["timestamp"],
-                            json.dumps({
-                                "level": log_entry["level"],
-                                "logger": log_entry["logger"],
-                                "message": log_entry["message"],
-                            })
-                        ]
-                    ]
+                    "values": [[str(int(time.time() * 1_000_000_000)), json.dumps(body)]],
                 }
             ]
         }
 
+    def send_to_loki(self, payload: Dict) -> None:
         headers = {"Content-Type": "application/json"}
-
         if self.auth_token:
             headers["Authorization"] = f"Bearer {self.auth_token}"
 
@@ -90,8 +80,12 @@ class LokiHandler(logging.Handler):
                 self.url,
                 json=payload,
                 headers=headers,
-                timeout=self.timeout
+                timeout=self.timeout,
             )
             response.raise_for_status()
         except requests.RequestException as e:
-            logging.error(f"Failed to send log to Loki: {e}")
+            # Log only the exception class — the message may contain the URL
+            # with embedded credentials or other sensitive context.
+            logging.getLogger(__name__).error(
+                "Failed to send log to Loki: %s", type(e).__name__
+            )

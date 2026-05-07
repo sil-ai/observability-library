@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "observability-library"
-version = "0.1.0"
-description = "Logging handler for Loki and Grafana"
+version = "0.2.0"
+description = "Loki logging + OpenTelemetry tracing helpers, with log↔trace correlation for Grafana"
 authors = [
     {name = "Andres Quintero", email = "aquintero@example.com"}
 ]
@@ -26,10 +26,20 @@ dependencies = [
     "requests>=2.28.0",
 ]
 
+[project.optional-dependencies]
+tracing = [
+    "opentelemetry-api>=1.27.0",
+    "opentelemetry-sdk>=1.27.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.27.0",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.0.0",
     "ruff>=0.14.0",
+    "opentelemetry-api>=1.27.0",
+    "opentelemetry-sdk>=1.27.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.27.0",
 ]
 
 [project.urls]

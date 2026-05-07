@@ -1,37 +1,51 @@
+"""End-to-end example: structured logs to Loki + traces to an OTLP backend.
+
+Requires `pip install observability-library[tracing]` for the OTel pieces.
 """
-Example usage of observability_library
-"""
+
 import logging
-from observability_library import LokiHandler
+import os
+
+from observability_library import (
+    LokiHandler,
+    TraceContextFilter,
+    setup_tracer_provider,
+)
 
 
 def main():
+    setup_tracer_provider(
+        service_name="example-app",
+        environment=os.getenv("ENVIRONMENT", "dev"),
+        otlp_endpoint=os.environ["OTLP_ENDPOINT"],
+        headers={"Authorization": f"Bearer {os.environ['OTLP_TOKEN']}"},
+        extra_resource_attributes={"team": "platform"},
+    )
+
     logger = logging.getLogger("example-app")
     logger.setLevel(logging.INFO)
+    logger.addFilter(TraceContextFilter())
 
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    logger.addHandler(console_handler)
+    console = logging.StreamHandler()
+    logger.addHandler(console)
 
-    loki_handler = LokiHandler(
-        url="http://localhost:3100/loki/api/v1/push",
-        labels={
-            "app": "example-application",
-            "env": "development",
-            "service": "backend"
-        },
-        timeout=5
+    loki = LokiHandler(
+        url=os.environ["LOKI_URL"],
+        labels={"app": "example-application", "env": "development"},
+        auth_token=os.getenv("LOKI_TOKEN"),
+        extra_allowlist={"assessment_id", "stage"},
     )
-    logger.addHandler(loki_handler)
+    logger.addHandler(loki)
 
-    logger.info("Application started successfully")
-    logger.warning("This is a warning message")
-    logger.error("This is an error message")
-    
-    try:
-        result = 10 / 0
-    except ZeroDivisionError:
-        logger.exception("Error dividing by zero")
+    from opentelemetry import trace
+    tracer = trace.get_tracer(__name__)
+
+    with tracer.start_as_current_span("example.run") as span:
+        span.set_attribute("aqua.assessment_id", 42)
+        logger.info(
+            "Run started",
+            extra={"assessment_id": 42, "stage": "init"},
+        )
 
 
 if __name__ == "__main__":
