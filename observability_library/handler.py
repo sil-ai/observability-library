@@ -92,7 +92,7 @@ class LokiHandler(logging.Handler):
             try:
                 loop = asyncio.get_running_loop()
                 loop.create_task(session.close())
-            except RuntimeError:
+            except Exception:
                 pass
         super().close()
 

@@ -112,3 +112,28 @@ def test_payload_handles_non_serialisable_extras_via_default_str():
     record = make_record(obj=Custom())
     body = _decode(build_loki_payload(record, "m", {}, allowlist))
     assert body["obj"] == "custom-repr"
+
+
+def test_payload_survives_extras_with_raising_str():
+    # A buggy __str__ used to propagate out of build_loki_payload via
+    # json.dumps(default=str), which would silently drop the entire
+    # record in handleError. The fallback path replaces just the bad
+    # field so the rest of the body still ships.
+    class Hostile:
+        def __str__(self):
+            raise RuntimeError("boom")
+
+        def __repr__(self):
+            return "Hostile()"
+
+    allowlist = validate_allowlist({"obj"})
+    record = make_record(obj=Hostile())
+    body = _decode(build_loki_payload(record, "m", {}, allowlist))
+    assert body["level"] == "INFO"
+    assert body["message"] == "m"
+    assert body["obj"] == "Hostile()"
+
+
+def test_payload_handles_empty_labels():
+    body = build_loki_payload(make_record(), "m", {}, validate_allowlist(None))
+    assert body["streams"][0]["stream"] == {}

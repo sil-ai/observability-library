@@ -147,13 +147,15 @@ def setup_tracer_provider(
 
         if require_auth:
             has_auth = headers is not None and any(
-                k.lower() == "authorization" for k in headers
+                k.lower() == "authorization" and isinstance(v, str) and v.strip()
+                for k, v in headers.items()
             )
             if not has_auth:
                 raise TracingConfigurationError(
-                    "OTLP exporter is missing an Authorization header. "
-                    "Pass require_auth=False to override for self-hosted "
-                    "deployments where the network is the trust boundary."
+                    "OTLP exporter is missing a non-empty Authorization "
+                    "header. Pass require_auth=False to override for "
+                    "self-hosted deployments where the network is the "
+                    "trust boundary."
                 )
 
         try:

@@ -107,10 +107,35 @@ def build_loki_payload(
         "streams": [
             {
                 "stream": dict(labels),
-                "values": [[timestamp, json.dumps(body, default=str)]],
+                "values": [[timestamp, _safe_json_dumps(body)]],
             }
         ]
     }
+
+
+def _safe_json_dumps(body: Dict) -> str:
+    """Serialize the body, tolerating extras whose __str__ raises.
+
+    `json.dumps(..., default=str)` calls `str(value)` on any unknown type.
+    A buggy `__str__` (recursion, raises) would otherwise propagate out of
+    `emit` via `handleError`, dropping the record entirely. We fall back
+    to `repr(value)`; if even that fails we drop the offending key with a
+    placeholder so the rest of the body still ships.
+    """
+    try:
+        return json.dumps(body, default=str)
+    except Exception:
+        sanitised = {}
+        for key, value in body.items():
+            try:
+                json.dumps(value, default=str)
+                sanitised[key] = value
+            except Exception:
+                try:
+                    sanitised[key] = repr(value)
+                except Exception:
+                    sanitised[key] = "<unserialisable>"
+        return json.dumps(sanitised, default=str)
 
 
 def log_send_failure(handler_kind: str, exc: BaseException) -> None:

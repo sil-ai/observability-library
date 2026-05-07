@@ -1,4 +1,4 @@
-from ._payload import DEFAULT_EXTRA_ALLOWLIST
+from ._payload import DEFAULT_EXTRA_ALLOWLIST, validate_allowlist
 from .handler import LokiHandler
 from .log_correlation import TraceContextFilter
 from .log_schema import LokiLoggerLabels
@@ -16,4 +16,5 @@ __all__ = [
     "TracingConfigurationError",
     "reset_tracing",
     "setup_tracer_provider",
+    "validate_allowlist",
 ]

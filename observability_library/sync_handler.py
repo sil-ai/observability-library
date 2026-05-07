@@ -74,9 +74,18 @@ class SyncLokiHandler(logging.Handler):
                     self.url, json=payload, headers=headers, timeout=self.timeout
                 )
                 response.raise_for_status()
-            except requests.RequestException as e:
+            except Exception as e:
+                # Catching broadly is intentional: a ValueError from a
+                # malformed URL or an OSError from a socket limit must not
+                # kill the daemon thread, otherwise audit logs stop
+                # shipping and the operator gets no signal.
                 log_send_failure("sync", e)
 
     def close(self) -> None:
         self._stop.set()
+        # Wait for the worker to drain in-flight items. Bounded by the
+        # 1s queue timeout plus the request timeout, so close() returns
+        # promptly even if Loki is unreachable.
+        if self._worker.is_alive():
+            self._worker.join(timeout=self.timeout + 2)
         super().close()

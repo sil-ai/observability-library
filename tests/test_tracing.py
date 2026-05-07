@@ -53,6 +53,16 @@ def test_auth_required_when_headers_is_none():
         _setup(headers=None)
 
 
+def test_auth_rejects_empty_authorization_value():
+    # An empty/whitespace-only Authorization value would silently
+    # downgrade to anonymous on the wire.
+    with pytest.raises(TracingConfigurationError, match="non-empty"):
+        _setup(headers={"Authorization": ""})
+    reset_tracing()
+    with pytest.raises(TracingConfigurationError, match="non-empty"):
+        _setup(headers={"Authorization": "   "})
+
+
 def test_auth_check_is_case_insensitive():
     provider = _setup(headers={"authorization": "Bearer x"})
     assert provider is not None

@@ -117,5 +117,54 @@ def test_close_is_safe_without_session():
     handler.close()  # no exception
 
 
+async def test_close_schedules_session_close_when_loop_running():
+    handler = LokiHandler(url="http://loki/push")
+
+    closed = []
+
+    async def fake_close():
+        closed.append(True)
+
+    fake_session = MagicMock()
+    fake_session.closed = False
+    fake_session.close = fake_close
+    handler._session = fake_session
+
+    handler.close()
+    # Yield to the loop so the scheduled close coroutine runs.
+    import asyncio as _asyncio
+    await _asyncio.sleep(0)
+    assert closed == [True]
+    handler._session = None
+
+
+async def test_async_send_creates_session_when_existing_one_is_closed():
+    handler = LokiHandler(url="http://loki/push")
+
+    stale = MagicMock()
+    stale.closed = True
+    handler._session = stale
+
+    with patch("aiohttp.ClientSession") as ClientSession:
+        new_session = MagicMock()
+        new_session.closed = False
+        new_session.post.return_value.__aenter__ = AsyncMock(
+            return_value=MagicMock(raise_for_status=MagicMock())
+        )
+        new_session.post.return_value.__aexit__ = AsyncMock(return_value=None)
+        ClientSession.return_value = new_session
+
+        await handler._async_send({"streams": []})
+
+    assert handler._session is new_session
+    handler._session = None
+
+
+def test_del_on_partially_constructed_instance_does_not_raise():
+    handler = LokiHandler.__new__(LokiHandler)
+    # __init__ never ran, so _session is missing — __del__ must tolerate.
+    handler.__del__()
+
+
 def test_handler_inherits_logging_handler():
     assert isinstance(LokiHandler(url="http://loki/push"), logging.Handler)
