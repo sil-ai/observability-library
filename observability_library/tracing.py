@@ -126,6 +126,9 @@ def setup_tracer_provider(
                 mismatches.append("service_name")
             if cached_attrs.get("deployment.environment") != environment:
                 mismatches.append("environment")
+            cached_endpoint = getattr(_provider, "_observability_otlp_endpoint", None)
+            if cached_endpoint is not None and cached_endpoint != otlp_endpoint:
+                mismatches.append("otlp_endpoint")
             if mismatches:
                 _logger.warning(
                     "setup_tracer_provider called again with different %s; "
@@ -176,6 +179,10 @@ def setup_tracer_provider(
         )
 
         trace.set_tracer_provider(provider)
+        # Stash on the provider so the idempotency-mismatch warning can
+        # detect endpoint changes on subsequent calls (resource attrs do
+        # not include the OTLP endpoint).
+        provider._observability_otlp_endpoint = otlp_endpoint
         _provider = provider
         return provider
 

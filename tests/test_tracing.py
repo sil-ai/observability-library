@@ -67,9 +67,15 @@ def test_idempotent_within_process():
 def test_warns_when_cached_provider_returned_with_different_config(caplog):
     _setup()
     with caplog.at_level(logging.WARNING, logger="observability_library.tracing"):
-        _setup(service_name="other", environment="prod")
-    assert any("service_name" in r.message for r in caplog.records)
-    assert any("environment" in r.message for r in caplog.records)
+        _setup(
+            service_name="other",
+            environment="prod",
+            otlp_endpoint="https://different/v1/traces",
+        )
+    messages = " ".join(r.message for r in caplog.records)
+    assert "service_name" in messages
+    assert "environment" in messages
+    assert "otlp_endpoint" in messages
 
 
 def test_reset_tracing_allows_new_provider():
