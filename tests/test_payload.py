@@ -48,6 +48,19 @@ def test_validate_allowlist_accepts_iterables():
     assert "x" in validate_allowlist(("x",))
 
 
+def test_validate_allowlist_rejects_bare_string():
+    # Bare strings are iterable-of-characters in Python; passing one
+    # would silently produce a per-character allowlist. The TypeError
+    # makes the misuse loud at construction time.
+    with pytest.raises(TypeError, match="iterable of field names"):
+        validate_allowlist("user_id")
+
+
+def test_validate_allowlist_rejects_bare_bytes():
+    with pytest.raises(TypeError, match="iterable of field names"):
+        validate_allowlist(b"user_id")
+
+
 # ---- build_loki_payload ----------------------------------------------------
 
 

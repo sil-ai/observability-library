@@ -83,17 +83,42 @@ class LokiHandler(logging.Handler):
         """Schedule the aiohttp session for closure on the running loop.
 
         Compatible with `logging.shutdown()`, which expects a synchronous
-        `close()`. The actual close is fire-and-forget; if no event loop
-        is running, the session leaks (Python's logging shutdown order
-        often beats the event loop, so this is best-effort).
+        `close()`. If a loop is running we fire-and-forget; otherwise we
+        run the coroutine on a fresh loop so the connector closes
+        cleanly. For long-lived async applications, prefer `aclose()` —
+        it gives you a coroutine you can `await` during shutdown.
         """
         session = getattr(self, "_session", None)
         if session and not session.closed:
             try:
                 loop = asyncio.get_running_loop()
                 loop.create_task(session.close())
+            except RuntimeError:
+                # No loop running — drive the close on a temporary one
+                # so we don't leak the connector. Skip on any failure.
+                try:
+                    asyncio.run(session.close())
+                except Exception:
+                    pass
             except Exception:
                 pass
+        super().close()
+
+    async def aclose(self) -> None:
+        """Async-friendly close. Await this during shutdown to guarantee
+        the aiohttp session and its connector are closed cleanly.
+
+        ```python
+        handler = LokiHandler(...)
+        try:
+            ...
+        finally:
+            await handler.aclose()
+        ```
+        """
+        session = getattr(self, "_session", None)
+        if session and not session.closed:
+            await session.close()
         super().close()
 
     def __del__(self):

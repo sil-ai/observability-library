@@ -117,6 +117,23 @@ def test_close_is_safe_without_session():
     handler.close()  # no exception
 
 
+async def test_aclose_awaits_session_close():
+    handler = LokiHandler(url="http://loki/push")
+    closed = []
+
+    async def fake_close():
+        closed.append(True)
+
+    fake_session = MagicMock()
+    fake_session.closed = False
+    fake_session.close = fake_close
+    handler._session = fake_session
+
+    await handler.aclose()
+    assert closed == [True]
+    handler._session = None
+
+
 async def test_close_schedules_session_close_when_loop_running():
     handler = LokiHandler(url="http://loki/push")
 

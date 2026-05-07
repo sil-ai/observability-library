@@ -119,15 +119,24 @@ def test_reserved_resource_attributes_cannot_be_overridden():
 
 
 def test_bsp_tuning_parameters_applied_to_processor():
-    provider = _setup(
-        max_queue_size=1024,
-        schedule_delay_millis=100,
-        max_export_batch_size=64,
-        export_timeout_millis=5000,
-    )
-    bsp = next(iter(provider._active_span_processor._span_processors))
-    inner = bsp._batch_processor
-    assert inner._max_queue_size == 1024
-    assert inner._schedule_delay_millis == 100
-    assert inner._max_export_batch_size == 64
-    assert inner._export_timeout_millis == 5000
+    # Spy on the BSP constructor rather than reaching into private OTel
+    # SDK attributes — keeps the test resilient to SDK-internal renames.
+    with patch(
+        "opentelemetry.sdk.trace.export.BatchSpanProcessor",
+        wraps=__import__(
+            "opentelemetry.sdk.trace.export", fromlist=["BatchSpanProcessor"]
+        ).BatchSpanProcessor,
+    ) as bsp_cls:
+        _setup(
+            max_queue_size=1024,
+            schedule_delay_millis=100,
+            max_export_batch_size=64,
+            export_timeout_millis=5000,
+        )
+
+    bsp_cls.assert_called_once()
+    kwargs = bsp_cls.call_args.kwargs
+    assert kwargs["max_queue_size"] == 1024
+    assert kwargs["schedule_delay_millis"] == 100
+    assert kwargs["max_export_batch_size"] == 64
+    assert kwargs["export_timeout_millis"] == 5000

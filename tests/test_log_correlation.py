@@ -13,12 +13,21 @@ from ._helpers import make_record
 
 @pytest.fixture
 def tracer():
+    # Save and restore OTel's globals so this fixture doesn't leak into
+    # other test modules. Mutating private internals is fragile but it's
+    # the only way to release the global tracer provider — `set_tracer_provider`
+    # refuses to overwrite an existing one.
+    saved_tracer_provider = getattr(trace, "_TRACER_PROVIDER", None)
+    saved_proxy = getattr(trace, "_PROXY_TRACER_PROVIDER", None)
+
     provider = TracerProvider()
     trace.set_tracer_provider(provider)
-    yield provider.get_tracer("test")
-    reset_tracing()
-    trace._TRACER_PROVIDER = None
-    trace._PROXY_TRACER_PROVIDER = ProxyTracerProvider()
+    try:
+        yield provider.get_tracer("test")
+    finally:
+        reset_tracing()
+        trace._TRACER_PROVIDER = saved_tracer_provider
+        trace._PROXY_TRACER_PROVIDER = saved_proxy or ProxyTracerProvider()
 
 
 def test_filter_is_noop_without_active_span():

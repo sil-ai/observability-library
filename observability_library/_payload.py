@@ -52,7 +52,16 @@ def validate_allowlist(extra_allowlist: Optional[Iterable[str]]) -> frozenset:
     Returns the union of `DEFAULT_EXTRA_ALLOWLIST` and the caller's
     additions. Raises `ValueError` if the caller's additions overlap
     standard `LogRecord` attribute names or the body's reserved keys.
+    Raises `TypeError` if a bare string or bytes is passed — those are
+    iterable-of-characters in Python, which would silently produce a
+    per-character allowlist.
     """
+    if isinstance(extra_allowlist, (str, bytes)):
+        raise TypeError(
+            "extra_allowlist must be an iterable of field names, not a "
+            f"single {type(extra_allowlist).__name__}. Pass a set/list/"
+            f"tuple, e.g. {{{extra_allowlist!r}}}."
+        )
     configured = frozenset(extra_allowlist or ())
 
     standard_overlap = configured & _STANDARD_RECORD_ATTRS
@@ -102,7 +111,7 @@ def build_loki_payload(
         if value is not None:
             body[key] = value
 
-    timestamp = str(int(time.time() * 1_000_000_000))
+    timestamp = str(time.time_ns())
     return {
         "streams": [
             {
