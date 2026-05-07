@@ -19,6 +19,13 @@ DEFAULT_EXTRA_ALLOWLIST = frozenset({
 })
 
 
+# Internal logger used for send-failure diagnostics. Set propagate=False so
+# a misconfiguration that attaches a LokiHandler to the root logger cannot
+# turn an emit failure into infinite recursion.
+_internal_logger = logging.getLogger(__name__)
+_internal_logger.propagate = False
+
+
 class LokiHandler(logging.Handler):
     """Logging handler that ships records to Loki as structured JSON.
 
@@ -26,6 +33,10 @@ class LokiHandler(logging.Handler):
     or via a `logging.Filter`) are forwarded as JSON fields, but only if they
     appear in `extra_allowlist`. The default allowlist covers OTel correlation
     fields; extend it to permit additional safe application fields.
+
+    Forwarding uses `getattr(record, key, None) is not None` — falsy values
+    such as `0` and `""` are forwarded; only `None` (and missing attributes)
+    are dropped.
     """
 
     def __init__(
@@ -41,7 +52,16 @@ class LokiHandler(logging.Handler):
         self.labels = labels or {}
         self.timeout = timeout
         self.auth_token = auth_token
-        self.extra_allowlist = DEFAULT_EXTRA_ALLOWLIST | frozenset(extra_allowlist or ())
+
+        configured = frozenset(extra_allowlist or ())
+        overlap = configured & _STANDARD_LOGRECORD_ATTRS
+        if overlap:
+            raise ValueError(
+                "extra_allowlist cannot include standard LogRecord attributes "
+                f"({sorted(overlap)}); these would forward unformatted "
+                "internals (e.g. raw `args` may carry secrets)."
+            )
+        self.extra_allowlist = DEFAULT_EXTRA_ALLOWLIST | configured
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
@@ -86,6 +106,6 @@ class LokiHandler(logging.Handler):
         except requests.RequestException as e:
             # Log only the exception class — the message may contain the URL
             # with embedded credentials or other sensitive context.
-            logging.getLogger(__name__).error(
+            _internal_logger.error(
                 "Failed to send log to Loki: %s", type(e).__name__
             )

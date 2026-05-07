@@ -20,6 +20,8 @@ the parameter docstrings for the rationale.
 
 from __future__ import annotations
 
+import logging
+import threading
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 
@@ -27,7 +29,12 @@ if TYPE_CHECKING:
     from opentelemetry.sdk.trace import TracerProvider
 
 
+_RESERVED_RESOURCE_ATTRS = frozenset({"service.name", "deployment.environment"})
+
+
 _provider: Optional["TracerProvider"] = None
+_provider_lock = threading.Lock()
+_logger = logging.getLogger(__name__)
 
 
 class TracingConfigurationError(ValueError):
@@ -50,7 +57,11 @@ def setup_tracer_provider(
 ) -> "TracerProvider":
     """Configure and register a global TracerProvider for OTLP/HTTP export.
 
-    Idempotent: subsequent calls return the existing provider unchanged.
+    Idempotent: subsequent calls return the cached provider. A warning
+    is emitted if a later call passes a different `service_name`,
+    `environment`, or `otlp_endpoint` so a misconfigured second call
+    cannot silently shadow a correctly-configured first call.
+
     Use `reset_tracing()` in tests to clear the cached provider.
 
     Args:
@@ -63,7 +74,10 @@ def setup_tracer_provider(
         headers: Extra HTTP headers for the exporter. Typically used to
             pass `Authorization: Bearer <token>`.
         extra_resource_attributes: Additional `resource.attributes`
-            (e.g. `{"modal.app": "aqua-agent"}`).
+            (e.g. `{"modal.app": "aqua-agent"}`). Cannot include
+            `service.name` or `deployment.environment` — those come
+            from the explicit named parameters and overlap raises
+            `TracingConfigurationError`.
         require_tls: When True (default) reject endpoints that don't
             start with `https://`. The OTel SDK does not enforce TLS.
         require_auth: When True (default) reject configurations that
@@ -91,72 +105,97 @@ def setup_tracer_provider(
 
     Raises:
         TracingConfigurationError: If `require_tls` or `require_auth` is
-            set and the corresponding check fails.
+            set and the corresponding check fails, or if
+            `extra_resource_attributes` overlaps the reserved keys.
     """
     global _provider
-    if _provider is not None:
-        return _provider
 
-    if require_tls and not otlp_endpoint.startswith("https://"):
-        raise TracingConfigurationError(
-            f"OTLP endpoint must use https:// (got {otlp_endpoint!r}). "
-            "Pass require_tls=False to override for local development."
-        )
-
-    if require_auth:
-        has_auth = bool(headers) and any(
-            k.lower() == "authorization" for k in (headers or {})
-        )
-        if not has_auth:
+    if extra_resource_attributes:
+        overlap = _RESERVED_RESOURCE_ATTRS & extra_resource_attributes.keys()
+        if overlap:
             raise TracingConfigurationError(
-                "OTLP exporter is missing an Authorization header. "
-                "Pass require_auth=False to override for self-hosted "
-                "deployments where the network is the trust boundary."
+                "extra_resource_attributes cannot override "
+                f"{sorted(overlap)}; use the explicit parameters instead."
             )
 
-    from opentelemetry import trace
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
-        OTLPSpanExporter,
-    )
-    from opentelemetry.sdk.resources import Resource
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    with _provider_lock:
+        if _provider is not None:
+            cached_attrs = _provider.resource.attributes
+            mismatches = []
+            if cached_attrs.get("service.name") != service_name:
+                mismatches.append("service_name")
+            if cached_attrs.get("deployment.environment") != environment:
+                mismatches.append("environment")
+            if mismatches:
+                _logger.warning(
+                    "setup_tracer_provider called again with different %s; "
+                    "returning the cached provider. Use reset_tracing() if "
+                    "you need to reconfigure.",
+                    ", ".join(mismatches),
+                )
+            return _provider
 
-    resource_attrs: Dict[str, Any] = {
-        "service.name": service_name,
-        "deployment.environment": environment,
-    }
-    if extra_resource_attributes:
-        resource_attrs.update(extra_resource_attributes)
+        if require_tls and not otlp_endpoint.startswith("https://"):
+            raise TracingConfigurationError(
+                f"OTLP endpoint must use https:// (got {otlp_endpoint!r}). "
+                "Pass require_tls=False to override for local development."
+            )
 
-    provider = TracerProvider(resource=Resource.create(resource_attrs))
-    provider.add_span_processor(
-        BatchSpanProcessor(
-            OTLPSpanExporter(endpoint=otlp_endpoint, headers=headers or {}),
-            max_queue_size=max_queue_size,
-            schedule_delay_millis=schedule_delay_millis,
-            max_export_batch_size=max_export_batch_size,
-            export_timeout_millis=export_timeout_millis,
+        if require_auth:
+            has_auth = headers is not None and any(
+                k.lower() == "authorization" for k in headers
+            )
+            if not has_auth:
+                raise TracingConfigurationError(
+                    "OTLP exporter is missing an Authorization header. "
+                    "Pass require_auth=False to override for self-hosted "
+                    "deployments where the network is the trust boundary."
+                )
+
+        from opentelemetry import trace
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+            OTLPSpanExporter,
         )
-    )
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-    trace.set_tracer_provider(provider)
-    _provider = provider
-    return provider
+        resource_attrs: Dict[str, Any] = dict(extra_resource_attributes or {})
+        resource_attrs["service.name"] = service_name
+        resource_attrs["deployment.environment"] = environment
+
+        provider = TracerProvider(resource=Resource.create(resource_attrs))
+        provider.add_span_processor(
+            BatchSpanProcessor(
+                OTLPSpanExporter(endpoint=otlp_endpoint, headers=headers or {}),
+                max_queue_size=max_queue_size,
+                schedule_delay_millis=schedule_delay_millis,
+                max_export_batch_size=max_export_batch_size,
+                export_timeout_millis=export_timeout_millis,
+            )
+        )
+
+        trace.set_tracer_provider(provider)
+        _provider = provider
+        return provider
 
 
 def reset_tracing() -> None:
     """Clear the cached provider so `setup_tracer_provider` re-runs.
 
-    Intended for test isolation. Does not unregister the global provider
-    from the OTel API — that requires shutting down and replacing it,
-    which tests should do via a pytest fixture if they need multiple
-    distinct providers in a single process.
+    Calls `provider.shutdown()` on the cached provider so its BSP
+    worker thread terminates cleanly. Note that the OTel API global
+    still points to the (now shut-down) provider until the next
+    `setup_tracer_provider` call replaces it — do not record spans in
+    the gap.
+
+    Intended for test isolation. Production code should not call this.
     """
     global _provider
-    if _provider is not None:
-        try:
-            _provider.shutdown()
-        except Exception:
-            pass
-    _provider = None
+    with _provider_lock:
+        if _provider is not None:
+            try:
+                _provider.shutdown()
+            except Exception:
+                pass
+        _provider = None

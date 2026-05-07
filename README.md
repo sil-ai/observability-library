@@ -86,6 +86,7 @@ spans), not bursty web traffic:
 | `max_queue_size` | 8192 | 2048 |
 | `schedule_delay_millis` | 2000 | 5000 |
 | `max_export_batch_size` | 512 | 512 |
+| `export_timeout_millis` | 30000 | 30000 |
 
 Override via keyword arguments to `setup_tracer_provider`.
 

@@ -14,9 +14,11 @@ from observability_library import (
 
 
 def main():
+    environment = os.getenv("ENVIRONMENT", "dev")
+
     setup_tracer_provider(
         service_name="example-app",
-        environment=os.getenv("ENVIRONMENT", "dev"),
+        environment=environment,
         otlp_endpoint=os.environ["OTLP_ENDPOINT"],
         headers={"Authorization": f"Bearer {os.environ['OTLP_TOKEN']}"},
         extra_resource_attributes={"team": "platform"},
@@ -31,7 +33,7 @@ def main():
 
     loki = LokiHandler(
         url=os.environ["LOKI_URL"],
-        labels={"app": "example-application", "env": "development"},
+        labels={"app": "example-application", "env": environment},
         auth_token=os.getenv("LOKI_TOKEN"),
         extra_allowlist={"assessment_id", "stage"},
     )
