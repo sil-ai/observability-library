@@ -20,9 +20,9 @@ class TraceContextFilter(logging.Filter):
     """Stamp trace_id/span_id/trace_flags from the active OTel span.
 
     Compatible with any handler that reads those attributes off the
-    `LogRecord`. The Loki handlers' default allowlist includes
-    `trace_id`, `span_id`, and `trace_flags`, so they are forwarded to
-    Loki automatically once this filter is attached.
+    `LogRecord`. The Loki handlers forward every non-standard record
+    attribute, so once this filter is attached the trace context shows
+    up in Loki automatically.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:

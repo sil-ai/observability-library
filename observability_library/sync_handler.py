@@ -1,11 +1,11 @@
 import logging
 import queue
 import threading
-from typing import Dict, Iterable, Optional
+from typing import Dict, Optional
 
 import requests
 
-from ._payload import build_loki_payload, log_send_failure, validate_allowlist
+from ._payload import build_loki_payload, log_send_failure
 
 
 class SyncLokiHandler(logging.Handler):
@@ -19,8 +19,9 @@ class SyncLokiHandler(logging.Handler):
     to Loki synchronously via `requests`. Records are dropped silently
     if the queue is full so callers are never blocked.
 
-    Extra fields are filtered through `extra_allowlist` — see
-    `LokiHandler` and `observability_library._payload` for the rationale.
+    Every non-standard attribute on the `LogRecord` is forwarded as a
+    JSON field — pass application fields via `extra={...}` or stamp them
+    on with a `logging.Filter`.
     """
 
     def __init__(
@@ -30,14 +31,12 @@ class SyncLokiHandler(logging.Handler):
         timeout: int = 5,
         auth_token: Optional[str] = None,
         queue_size: int = 10000,
-        extra_allowlist: Optional[Iterable[str]] = None,
     ):
         super().__init__()
         self.url = url
         self.labels = labels or {}
         self.timeout = timeout
         self.auth_token = auth_token
-        self.extra_allowlist = validate_allowlist(extra_allowlist)
         self._queue: "queue.Queue[Dict]" = queue.Queue(maxsize=queue_size)
         self._stop = threading.Event()
         self._worker = threading.Thread(
@@ -47,12 +46,7 @@ class SyncLokiHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            payload = build_loki_payload(
-                record,
-                self.format(record),
-                self.labels,
-                self.extra_allowlist,
-            )
+            payload = build_loki_payload(record, self.format(record), self.labels)
             self._queue.put_nowait(payload)
         except queue.Full:
             pass

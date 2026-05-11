@@ -36,7 +36,6 @@ logger.setLevel(logging.INFO)
 logger.addHandler(LokiHandler(
     url="http://localhost:3100/loki/api/v1/push",
     labels={"app": "my-application", "env": "production"},
-    extra_allowlist={"user_id", "request_id"},
 ))
 
 logger.info("login", extra={"user_id": "abc"})
@@ -50,25 +49,12 @@ from observability_library import SyncLokiHandler
 logger.addHandler(SyncLokiHandler(
     url="http://localhost:3100/loki/api/v1/push",
     labels={"app": "my-application"},
-    extra_allowlist={"user_id"},
 ))
 ```
 
-Both handlers share the same constructor surface and the same security
-defaults — they only differ in transport.
-
-### Allowlist for `extra` fields
-
-Both handlers forward only those record attributes whose keys appear in
-`extra_allowlist`. The default allowlist covers OpenTelemetry correlation
-fields (`trace_id`, `span_id`, `trace_flags`); extend it explicitly for
-any application-specific fields you want shipped to Loki. This prevents
-records elsewhere in the codebase from leaking secrets or large payloads
-into Loki via `extra={...}`.
-
-The allowlist rejects fields that would shadow standard `LogRecord`
-attributes (`args`, `msg`, etc.) or the body's reserved keys (`level`,
-`logger`, `message`).
+Both handlers share the same constructor surface and ship every
+non-standard `LogRecord` attribute as a JSON field. They only differ in
+transport.
 
 ## Tracing
 
@@ -106,7 +92,7 @@ OpenAIInstrumentor().instrument()
 | Check | Default | Override |
 |---|---|---|
 | Endpoint must be `https://` | on | `require_tls=False` |
-| `Authorization` header must be present | on | `require_auth=False` |
+| `Authorization` header must be present and non-empty | on | `require_auth=False` |
 | `service.name` / `deployment.environment` cannot be set via `extra_resource_attributes` | enforced | use the named parameters |
 
 All raise `TracingConfigurationError` on failure.
@@ -134,9 +120,9 @@ logger.addFilter(TraceContextFilter())
 ```
 
 While a span is active, the filter stamps `trace_id`, `span_id`, and
-`trace_flags` onto each `LogRecord`. The Loki handlers' default
-allowlist forwards them to Loki, so Grafana derived fields can link any
-log line to its trace.
+`trace_flags` onto each `LogRecord`. The Loki handlers forward those
+fields to Loki along with anything else attached to the record, so
+Grafana derived fields can link any log line to its trace.
 
 ## Testing
 

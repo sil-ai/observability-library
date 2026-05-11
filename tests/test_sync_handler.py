@@ -18,11 +18,6 @@ def handler():
     h.close()
 
 
-def test_extra_allowlist_validated_at_construction():
-    with pytest.raises(ValueError, match="standard LogRecord"):
-        SyncLokiHandler(url="http://loki/push", extra_allowlist={"args"})
-
-
 def test_emit_enqueues_payload_with_canonical_body():
     # Block the worker so the queue retains items, then assert what we
     # actually put on it.

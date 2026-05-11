@@ -1,10 +1,10 @@
 import asyncio
 import logging
-from typing import Dict, Iterable, Optional
+from typing import Dict, Optional
 
 import aiohttp
 
-from ._payload import build_loki_payload, log_send_failure, validate_allowlist
+from ._payload import build_loki_payload, log_send_failure
 
 
 class LokiHandler(logging.Handler):
@@ -13,12 +13,9 @@ class LokiHandler(logging.Handler):
     Designed for async environments (FastAPI, asyncio). Uses aiohttp for
     non-blocking HTTP requests and requires a running event loop.
 
-    Extra fields attached to a LogRecord (via `logger.info(..., extra={...})`
-    or via a `logging.Filter` such as `TraceContextFilter`) are forwarded
-    as JSON fields on the Loki payload, but only if they appear in
-    `extra_allowlist`. The default allowlist covers OTel correlation
-    fields; extend it explicitly for any application fields you want
-    shipped. See `observability_library._payload` for security rationale.
+    Every non-standard attribute on the `LogRecord` is forwarded as a
+    JSON field — pass application fields via `logger.info(..., extra={...})`
+    or stamp them on with a `logging.Filter` (e.g. `TraceContextFilter`).
     """
 
     def __init__(
@@ -27,24 +24,17 @@ class LokiHandler(logging.Handler):
         labels: Optional[Dict[str, str]] = None,
         timeout: int = 5,
         auth_token: Optional[str] = None,
-        extra_allowlist: Optional[Iterable[str]] = None,
     ):
         super().__init__()
         self.url = url
         self.labels = labels or {}
         self.timeout = timeout
         self.auth_token = auth_token
-        self.extra_allowlist = validate_allowlist(extra_allowlist)
         self._session: Optional[aiohttp.ClientSession] = None
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            payload = build_loki_payload(
-                record,
-                self.format(record),
-                self.labels,
-                self.extra_allowlist,
-            )
+            payload = build_loki_payload(record, self.format(record), self.labels)
         except Exception:
             self.handleError(record)
             return
@@ -123,7 +113,7 @@ class LokiHandler(logging.Handler):
 
     def __del__(self):
         # Defensive: __del__ can fire on a partially-constructed instance
-        # if __init__ raised (e.g. validate_allowlist rejected the args).
+        # if __init__ raised.
         session = getattr(self, "_session", None)
         if session and not session.closed:
             try:

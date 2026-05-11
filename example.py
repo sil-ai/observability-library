@@ -46,7 +46,6 @@ async def async_example() -> None:
         url=os.environ["LOKI_URL"],
         labels={"app": "example-application", "env": environment},
         auth_token=os.getenv("LOKI_TOKEN"),
-        extra_allowlist={"assessment_id", "stage"},
     ))
 
     from opentelemetry import trace
@@ -65,7 +64,6 @@ def sync_example() -> None:
         url=os.environ["LOKI_URL"],
         labels={"app": "example-application", "env": environment},
         auth_token=os.getenv("LOKI_TOKEN"),
-        extra_allowlist={"job_id"},
     ))
 
     from opentelemetry import trace

@@ -7,16 +7,9 @@ asserted in test_payload.py and test_send_failure.py.
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from observability_library import LokiHandler
 
 from ._helpers import make_record
-
-
-def test_extra_allowlist_validated_at_construction():
-    with pytest.raises(ValueError, match="reserved body keys"):
-        LokiHandler(url="http://loki/push", extra_allowlist={"level"})
 
 
 def test_emit_creates_task_when_loop_running():
