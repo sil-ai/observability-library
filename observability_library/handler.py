@@ -1,28 +1,21 @@
-import logging
-import json
-import time
 import asyncio
+import logging
 from typing import Dict, Optional
+
 import aiohttp
 
-
-_STANDARD_RECORD_ATTRS = {
-    "name", "msg", "args", "created", "relativeCreated", "exc_info",
-    "exc_text", "stack_info", "lineno", "funcName", "pathname",
-    "filename", "module", "thread", "threadName", "process",
-    "processName", "levelname", "levelno", "message", "msecs",
-    "taskName",
-}
+from ._payload import build_loki_payload, log_send_failure
 
 
 class LokiHandler(logging.Handler):
-    """
-    Async logging handler to send logs to Loki/Grafana.
+    """Async logging handler to send logs to Loki/Grafana.
 
-    This handler is designed exclusively for async environments (FastAPI, asyncio).
-    It uses aiohttp for non-blocking HTTP requests.
+    Designed for async environments (FastAPI, asyncio). Uses aiohttp for
+    non-blocking HTTP requests and requires a running event loop.
 
-    Requires an async event loop to be running.
+    Every non-standard attribute on the `LogRecord` is forwarded as a
+    JSON field — pass application fields via `logger.info(..., extra={...})`
+    or stamp them on with a `logging.Filter` (e.g. `TraceContextFilter`).
     """
 
     def __init__(
@@ -32,13 +25,6 @@ class LokiHandler(logging.Handler):
         timeout: int = 5,
         auth_token: Optional[str] = None,
     ):
-        """
-        Args:
-            url: Loki endpoint URL (e.g., http://localhost:3100/loki/api/v1/push)
-            labels: Dictionary of labels for Loki (e.g., {"app": "my-app", "env": "prod"})
-            timeout: Timeout for HTTP requests in seconds
-            auth_token: Bearer token for authentication (optional)
-        """
         super().__init__()
         self.url = url
         self.labels = labels or {}
@@ -47,111 +33,91 @@ class LokiHandler(logging.Handler):
         self._session: Optional[aiohttp.ClientSession] = None
 
     def emit(self, record: logging.LogRecord) -> None:
-        """
-        Sends a log record to Loki asynchronously.
-
-        Requires an async event loop to be running.
-        Creates a task to send the log without blocking.
-        """
         try:
-            log_entry = self.format_record(record)
-            loop = asyncio.get_running_loop()
-            asyncio.create_task(self.async_send_to_loki(log_entry))
-        except RuntimeError:
-            logging.error("LokiHandler requires an async event loop. Use in FastAPI or asyncio applications.")
+            payload = build_loki_payload(record, self.format(record), self.labels)
         except Exception:
             self.handleError(record)
-
-    def format_record(self, record: logging.LogRecord) -> Dict:
-        """
-        Formats the log record for Loki, including any extra fields.
-        """
-        log_data = {
-            "timestamp": str(int(time.time() * 1_000_000_000)),
-            "level": record.levelname,
-            "logger": record.name,
-            "message": self.format(record),
-        }
-
-        for key, value in record.__dict__.items():
-            if key not in _STANDARD_RECORD_ATTRS and not key.startswith("_"):
-                log_data[key] = value
-
-        return log_data
-
-    async def async_send_to_loki(self, log_entry: Dict) -> None:
-        """
-        Sends the log to Loki via HTTP asynchronously.
-        Uses aiohttp for non-blocking requests.
-        """
-        payload = self._build_payload(log_entry)
-        headers = self._build_headers()
+            return
 
         try:
-            # Create session if it doesn't exist
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            log_send_failure("async", RuntimeError("no running event loop"))
+            return
+
+        loop.create_task(self._async_send(payload))
+
+    async def _async_send(self, payload: Dict) -> None:
+        try:
             if self._session is None or self._session.closed:
-                timeout = aiohttp.ClientTimeout(total=self.timeout)
-                self._session = aiohttp.ClientSession(timeout=timeout)
+                self._session = aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=self.timeout)
+                )
 
             async with self._session.post(
                 self.url,
                 json=payload,
-                headers=headers
+                headers=self._build_headers(),
             ) as response:
                 response.raise_for_status()
-        except aiohttp.ClientError as e:
-            logging.error(f"Failed to send log to Loki (async): {e}")
         except Exception as e:
-            logging.error(f"Unexpected error sending log to Loki: {e}")
-
-    def _build_payload(self, log_entry: Dict) -> Dict:
-        """Builds the Loki payload structure, including extra fields."""
-        timestamp = log_entry.pop("timestamp")
-        return {
-            "streams": [
-                {
-                    "stream": self.labels,
-                    "values": [
-                        [
-                            timestamp,
-                            json.dumps(log_entry, default=str),
-                        ]
-                    ]
-                }
-            ]
-        }
+            log_send_failure("async", e)
 
     def _build_headers(self) -> Dict[str, str]:
-        """Builds HTTP headers for Loki requests."""
         headers = {"Content-Type": "application/json"}
         if self.auth_token:
             headers["Authorization"] = f"Bearer {self.auth_token}"
         return headers
 
     def close(self) -> None:
-        """
-        Close the aiohttp session synchronously.
+        """Schedule the aiohttp session for closure on the running loop.
 
-        Attempts to close the session if an event loop is running.
-        Schedules the close operation without waiting for completion.
-
-        This method is compatible with Python's logging.shutdown() which
-        expects a synchronous close() method.
+        Compatible with `logging.shutdown()`, which expects a synchronous
+        `close()`. If a loop is running we fire-and-forget; otherwise we
+        run the coroutine on a fresh loop so the connector closes
+        cleanly. For long-lived async applications, prefer `aclose()` —
+        it gives you a coroutine you can `await` during shutdown.
         """
-        if self._session and not self._session.closed:
+        session = getattr(self, "_session", None)
+        if session and not session.closed:
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(self._session.close())
+                loop.create_task(session.close())
             except RuntimeError:
-                # No event loop running, cannot close async session
+                # No loop running — drive the close on a temporary one
+                # so we don't leak the connector. Skip on any failure.
+                try:
+                    asyncio.run(session.close())
+                except Exception:
+                    pass
+            except Exception:
                 pass
+        super().close()
+
+    async def aclose(self) -> None:
+        """Async-friendly close. Await this during shutdown to guarantee
+        the aiohttp session and its connector are closed cleanly.
+
+        ```python
+        handler = LokiHandler(...)
+        try:
+            ...
+        finally:
+            await handler.aclose()
+        ```
+        """
+        session = getattr(self, "_session", None)
+        if session and not session.closed:
+            await session.close()
+        super().close()
 
     def __del__(self):
-        """Cleanup resources on deletion."""
-        if self._session and not self._session.closed:
+        # Defensive: __del__ can fire on a partially-constructed instance
+        # if __init__ raised.
+        session = getattr(self, "_session", None)
+        if session and not session.closed:
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(self._session.close())
-            except RuntimeError:
-                # No event loop, can't close async session
+                loop.create_task(session.close())
+            except Exception:
                 pass

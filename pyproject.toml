@@ -1,7 +1,7 @@
 [project]
 name = "observability-library"
-version = "0.2.0"
-description = "Logging handler for Loki and Grafana"
+version = "0.3.0"
+description = "Loki logging + OpenTelemetry tracing helpers, with log↔trace correlation for Grafana"
 authors = [
     {name = "Andres Quintero", email = "aquintero@example.com"}
 ]
@@ -11,6 +11,24 @@ requires-python = ">=3.10"
 dependencies = [
     "aiohttp>=3.8.0",
     "requests>=2.28.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+tracing = [
+    "opentelemetry-api>=1.27.0",
+    "opentelemetry-sdk>=1.27.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.27.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.14.0",
+    "opentelemetry-api>=1.27.0",
+    "opentelemetry-sdk>=1.27.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.27.0",
 ]
 
 [build-system]
@@ -24,3 +42,6 @@ Repository = "https://github.com/sil-ai/observability-library"
 where = ["."]
 include = ["observability_library*"]
 exclude = ["tests*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
