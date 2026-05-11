@@ -1,20 +1,11 @@
-import json
 import logging
 import queue
 import threading
-import time
 from typing import Dict, Optional
 
 import requests
 
-
-_STANDARD_RECORD_ATTRS = {
-    "name", "msg", "args", "created", "relativeCreated", "exc_info",
-    "exc_text", "stack_info", "lineno", "funcName", "pathname",
-    "filename", "module", "thread", "threadName", "process",
-    "processName", "levelname", "levelno", "message", "msecs",
-    "taskName",
-}
+from ._payload import build_loki_payload, log_send_failure
 
 
 class SyncLokiHandler(logging.Handler):
@@ -23,10 +14,14 @@ class SyncLokiHandler(logging.Handler):
     Designed for environments without a running asyncio event loop
     (Django/WSGI, Django sync views in the ASGI threadpool, scripts).
 
-    ``emit`` is non-blocking: it serializes the record and pushes it onto
+    `emit` is non-blocking: it serialises the record and pushes it onto
     a bounded queue. A single daemon thread drains the queue and POSTs
-    to Loki synchronously via ``requests``. Records are dropped silently
-    if the queue is full so that callers are never blocked.
+    to Loki synchronously via `requests`. Records are dropped silently
+    if the queue is full so callers are never blocked.
+
+    Every non-standard attribute on the `LogRecord` is forwarded as a
+    JSON field — pass application fields via `extra={...}` or stamp them
+    on with a `logging.Filter`.
     """
 
     def __init__(
@@ -51,32 +46,12 @@ class SyncLokiHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            payload = self._build_payload(record)
+            payload = build_loki_payload(record, self.format(record), self.labels)
             self._queue.put_nowait(payload)
         except queue.Full:
             pass
         except Exception:
             self.handleError(record)
-
-    def _build_payload(self, record: logging.LogRecord) -> Dict:
-        log_entry = {
-            "level": record.levelname,
-            "logger": record.name,
-            "message": self.format(record),
-        }
-        for key, value in record.__dict__.items():
-            if key not in _STANDARD_RECORD_ATTRS and not key.startswith("_"):
-                log_entry[key] = value
-
-        timestamp = str(int(time.time() * 1_000_000_000))
-        return {
-            "streams": [
-                {
-                    "stream": self.labels,
-                    "values": [[timestamp, json.dumps(log_entry, default=str)]],
-                }
-            ]
-        }
 
     def _drain(self) -> None:
         headers = {"Content-Type": "application/json"}
@@ -93,9 +68,18 @@ class SyncLokiHandler(logging.Handler):
                     self.url, json=payload, headers=headers, timeout=self.timeout
                 )
                 response.raise_for_status()
-            except requests.RequestException as e:
-                logging.error(f"Failed to send log to Loki (sync): {e}")
+            except Exception as e:
+                # Catching broadly is intentional: a ValueError from a
+                # malformed URL or an OSError from a socket limit must not
+                # kill the daemon thread, otherwise audit logs stop
+                # shipping and the operator gets no signal.
+                log_send_failure("sync", e)
 
     def close(self) -> None:
         self._stop.set()
+        # Wait for the worker to drain in-flight items. Bounded by the
+        # 1s queue timeout plus the request timeout, so close() returns
+        # promptly even if Loki is unreachable.
+        if self._worker.is_alive():
+            self._worker.join(timeout=self.timeout + 2)
         super().close()
