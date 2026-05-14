@@ -118,7 +118,22 @@ class LokiHandler(logging.Handler):
 
     async def _async_send(self, payload: Dict) -> None:
         try:
-            if self._session is None or self._session.closed:
+            current_loop = asyncio.get_running_loop()
+            session_loop = (
+                getattr(self._session, "_loop", None) if self._session else None
+            )
+            # Recreate the session when the loop it was bound to doesn't
+            # match the one we're running on. aiohttp's internal timeout
+            # bookkeeping is loop-scoped, so reusing a session across
+            # loops raises "Timeout context manager should be used inside
+            # a task". Observed in Modal workers where a function's
+            # secondary loop emits records after the first one has been
+            # torn down.
+            if (
+                self._session is None
+                or self._session.closed
+                or session_loop is not current_loop
+            ):
                 self._session = aiohttp.ClientSession(
                     timeout=aiohttp.ClientTimeout(total=self.timeout)
                 )

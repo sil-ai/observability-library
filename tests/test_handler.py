@@ -212,6 +212,10 @@ async def test_async_send_posts_payload_with_auth_header():
 
     fake_session = MagicMock()
     fake_session.closed = False
+    # Bind to the current loop so the handler's loop-mismatch check
+    # treats this cached session as fresh.
+    import asyncio as _asyncio
+    fake_session._loop = _asyncio.get_running_loop()
     fake_session.post = MagicMock()
     fake_session.post.return_value.__aenter__ = AsyncMock(return_value=fake_response)
     fake_session.post.return_value.__aexit__ = AsyncMock(return_value=None)
@@ -289,6 +293,33 @@ async def test_close_schedules_session_close_when_loop_running():
     import asyncio as _asyncio
     await _asyncio.sleep(0)
     assert closed == [True]
+    handler._session = None
+
+
+async def test_async_send_recreates_session_when_loop_changed():
+    """Modal workers can run a function's logging from a different event
+    loop than the one a cached aiohttp ClientSession was bound to. The
+    handler must detect that and rebuild the session, otherwise aiohttp
+    raises 'Timeout context manager should be used inside a task'."""
+    handler = LokiHandler(url="http://loki/push")
+
+    stale = MagicMock()
+    stale.closed = False
+    stale._loop = MagicMock()  # different loop object than the running one
+    handler._session = stale
+
+    with patch("aiohttp.ClientSession") as ClientSession:
+        new_session = MagicMock()
+        new_session.closed = False
+        new_session.post.return_value.__aenter__ = AsyncMock(
+            return_value=MagicMock(raise_for_status=MagicMock())
+        )
+        new_session.post.return_value.__aexit__ = AsyncMock(return_value=None)
+        ClientSession.return_value = new_session
+
+        await handler._async_send({"streams": []})
+
+    assert handler._session is new_session  # stale session was replaced
     handler._session = None
 
 
