@@ -76,8 +76,45 @@ def test_close_tears_down_fallback():
     fallback = handler._get_thread_fallback()
     assert fallback is not None
     handler.close()
-    # Worker thread should have been signalled to stop; join with timeout.
-    assert not fallback._worker.is_alive() or fallback._stop.is_set()
+    assert fallback._stop.is_set()
+    assert not fallback._worker.is_alive()
+    # Fallback is cleared so a subsequent emit() doesn't enqueue into a
+    # dead worker.
+    assert handler._fallback is None
+
+
+async def test_aclose_tears_down_fallback():
+    handler = LokiHandler(url="http://loki/push")
+    fallback = handler._get_thread_fallback()
+    assert fallback is not None
+    await handler.aclose()
+    assert fallback._stop.is_set()
+    assert not fallback._worker.is_alive()
+    assert handler._fallback is None
+
+
+def test_emit_logs_send_failure_when_fallback_queue_full():
+    handler = LokiHandler(url="http://loki/push")
+    try:
+        full_fallback = MagicMock()
+        full_fallback.enqueue_payload.return_value = False
+        with patch.object(handler, "_get_thread_fallback", return_value=full_fallback):
+            with patch("observability_library.handler.log_send_failure") as failure:
+                handler.emit(make_record())
+        failure.assert_called_once()
+        assert failure.call_args.args[0] == "async"
+    finally:
+        handler.close()
+
+
+def test_emit_after_close_does_not_re_enqueue_to_dead_fallback():
+    handler = LokiHandler(url="http://loki/push")
+    handler._get_thread_fallback()  # build it
+    handler.close()
+    with patch("observability_library.handler.log_send_failure") as failure:
+        handler.emit(make_record())
+    failure.assert_called_once()
+    assert failure.call_args.args[0] == "async"
 
 
 def test_emit_routes_through_handle_error_on_payload_failure():

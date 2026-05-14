@@ -88,7 +88,8 @@ class LokiHandler(logging.Handler):
 
         fallback = self._get_thread_fallback()
         if fallback is not None:
-            fallback.enqueue_payload(payload)
+            if not fallback.enqueue_payload(payload):
+                log_send_failure("async", RuntimeError("thread fallback queue full"))
             return
 
         log_send_failure("async", RuntimeError("no running event loop"))
@@ -144,6 +145,8 @@ class LokiHandler(logging.Handler):
                 fallback.close()
             except Exception:
                 pass
+            self._fallback = None
+            self._enable_thread_fallback = False
         super().close()
 
     async def aclose(self) -> None:
@@ -164,9 +167,15 @@ class LokiHandler(logging.Handler):
         fallback = getattr(self, "_fallback", None)
         if fallback is not None:
             try:
-                fallback.close()
+                # `SyncLokiHandler.close()` joins the worker thread for up
+                # to `timeout + 2`s; offload it so we don't block the loop.
+                await asyncio.get_running_loop().run_in_executor(
+                    None, fallback.close
+                )
             except Exception:
                 pass
+            self._fallback = None
+            self._enable_thread_fallback = False
         super().close()
 
     def __del__(self):
@@ -177,5 +186,11 @@ class LokiHandler(logging.Handler):
             try:
                 loop = asyncio.get_running_loop()
                 loop.create_task(session.close())
+            except Exception:
+                pass
+        fallback = getattr(self, "_fallback", None)
+        if fallback is not None:
+            try:
+                fallback.close()
             except Exception:
                 pass
