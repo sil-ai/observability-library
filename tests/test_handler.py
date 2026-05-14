@@ -49,6 +49,25 @@ def test_emit_routes_to_thread_fallback_when_no_event_loop():
         handler.close()
 
 
+def test_emit_falls_back_when_loop_create_task_raises_runtime_error():
+    """Race seen in practice: get_running_loop() succeeds but the loop
+    closes before create_task is called (typical near worker/interpreter
+    shutdown). The handler should fall through to the sync fallback
+    rather than letting the RuntimeError escape."""
+    handler = LokiHandler(url="http://loki/push")
+    try:
+        fake_loop = MagicMock()
+        fake_loop.create_task.side_effect = RuntimeError("Event loop is closed")
+        fake_fallback = MagicMock()
+        fake_fallback.enqueue_payload.return_value = True
+        with patch("asyncio.get_running_loop", return_value=fake_loop), \
+             patch.object(handler, "_get_thread_fallback", return_value=fake_fallback):
+            handler.emit(make_record())
+        fake_fallback.enqueue_payload.assert_called_once()
+    finally:
+        handler.close()
+
+
 def test_emit_logs_send_failure_when_fallback_disabled_and_no_loop():
     handler = LokiHandler(url="http://loki/push", enable_thread_fallback=False)
     with patch("observability_library.handler.log_send_failure") as failure:

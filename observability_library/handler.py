@@ -98,8 +98,15 @@ class LokiHandler(logging.Handler):
             loop = None
 
         if loop is not None:
-            loop.create_task(self._async_send(payload))
-            return
+            try:
+                loop.create_task(self._async_send(payload))
+                return
+            except RuntimeError:
+                # `get_running_loop` succeeded but the loop has since
+                # closed (typical near interpreter / worker shutdown).
+                # Fall through to the thread fallback so the record
+                # still ships.
+                pass
 
         fallback = self._get_thread_fallback()
         if fallback is not None:

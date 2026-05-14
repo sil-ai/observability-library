@@ -13,6 +13,8 @@ emit failure into an infinite loop.
 
 import json
 import logging
+import os
+import re
 import time
 from typing import Dict, Mapping
 
@@ -90,8 +92,42 @@ def _safe_json_dumps(body: Dict) -> str:
         return json.dumps(sanitised, default=str)
 
 
+_CREDENTIAL_URL_RE = re.compile(r"(://[^/\s]*?:)[^@\s]*?(@)")
+
+
+def _sanitise_exc_message(exc: BaseException) -> str:
+    """Best-effort `str(exc)` with embedded URL credentials stripped.
+
+    Returns an empty string if conversion to str fails. The default
+    `Failed to send log to Loki (...)` line stays credential-safe; this
+    helper is only consulted when `LOKI_DEBUG=1` opts in to verbose
+    diagnostics.
+    """
+    try:
+        text = str(exc)
+    except Exception:
+        return ""
+    return _CREDENTIAL_URL_RE.sub(r"\1***\2", text)
+
+
 def log_send_failure(handler_kind: str, exc: BaseException) -> None:
-    """Log a Loki send failure without leaking the exception's str()."""
+    """Log a Loki send failure.
+
+    By default we log only the exception class name — `requests` and
+    `aiohttp` exception messages can include the target URL with
+    embedded credentials. Set ``LOKI_DEBUG=1`` to additionally include a
+    sanitised `str(exc)`, which is useful when timeouts or other
+    failures need diagnosis (the class name alone is rarely enough to
+    tell `connect` from `read` timeouts, or DNS from TLS errors).
+    """
+    if os.environ.get("LOKI_DEBUG", "").strip().lower() in ("1", "true", "yes"):
+        detail = _sanitise_exc_message(exc)
+        if detail:
+            _send_failure_logger.error(
+                "Failed to send log to Loki (%s): %s: %s",
+                handler_kind, type(exc).__name__, detail,
+            )
+            return
     _send_failure_logger.error(
         "Failed to send log to Loki (%s): %s", handler_kind, type(exc).__name__
     )
