@@ -8,6 +8,10 @@ import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from observability_library import LokiHandler
+from observability_library.handler import (
+    NoRunningEventLoopError,
+    ThreadFallbackQueueFullError,
+)
 
 from ._helpers import make_record
 
@@ -52,6 +56,24 @@ def test_emit_logs_send_failure_when_fallback_disabled_and_no_loop():
     failure.assert_called_once()
     args, _ = failure.call_args
     assert args[0] == "async"
+    assert isinstance(args[1], NoRunningEventLoopError)
+
+
+def test_fallback_construction_failure_is_reported_then_path_disabled():
+    handler = LokiHandler(url="http://loki/push")
+    with patch(
+        "observability_library.handler.SyncLokiHandler",
+        side_effect=RuntimeError("cannot build"),
+    ):
+        with patch("observability_library.handler.log_send_failure") as failure:
+            assert handler._get_thread_fallback() is None
+            # Second call must not retry construction nor re-log.
+            assert handler._get_thread_fallback() is None
+    failure.assert_called_once()
+    args, _ = failure.call_args
+    assert args[0] == "async"
+    assert isinstance(args[1], RuntimeError)
+    assert handler._enable_thread_fallback is False
 
 
 def test_thread_fallback_is_lazy():
@@ -83,6 +105,32 @@ def test_close_tears_down_fallback():
     assert handler._fallback is None
 
 
+async def test_close_offloads_fallback_teardown_when_loop_running():
+    handler = LokiHandler(url="http://loki/push")
+    fake_fallback = MagicMock()
+    handler._fallback = fake_fallback
+    fake_loop = MagicMock()
+    with patch("asyncio.get_running_loop", return_value=fake_loop):
+        handler.close()
+    # Inside a running loop, close() routes the join through
+    # run_in_executor instead of calling fallback.close() directly.
+    fake_loop.run_in_executor.assert_called_once_with(None, fake_fallback.close)
+    fake_fallback.close.assert_not_called()
+    assert handler._fallback is None
+    assert handler._enable_thread_fallback is False
+
+
+def test_del_does_not_block_on_fallback_join():
+    handler = LokiHandler(url="http://loki/push")
+    fake_fallback = MagicMock()
+    fake_fallback._stop = MagicMock()
+    handler._fallback = fake_fallback
+    handler.__del__()
+    # __del__ must signal stop but must NOT call close() (which joins).
+    fake_fallback._stop.set.assert_called_once()
+    fake_fallback.close.assert_not_called()
+
+
 async def test_aclose_tears_down_fallback():
     handler = LokiHandler(url="http://loki/push")
     fallback = handler._get_thread_fallback()
@@ -103,6 +151,7 @@ def test_emit_logs_send_failure_when_fallback_queue_full():
                 handler.emit(make_record())
         failure.assert_called_once()
         assert failure.call_args.args[0] == "async"
+        assert isinstance(failure.call_args.args[1], ThreadFallbackQueueFullError)
     finally:
         handler.close()
 

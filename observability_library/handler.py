@@ -9,6 +9,18 @@ from ._payload import build_loki_payload, log_send_failure
 from .sync_handler import SyncLokiHandler
 
 
+class NoRunningEventLoopError(RuntimeError):
+    """Raised internally when `emit` runs on a thread with no loop and
+    no fallback is available. Surfaced via `log_send_failure` so the
+    class name distinguishes it from other RuntimeError causes."""
+
+
+class ThreadFallbackQueueFullError(RuntimeError):
+    """Raised internally when the thread-fallback queue is saturated.
+    Distinct from `NoRunningEventLoopError` so operators can tell the
+    two drop-paths apart from the logged class name alone."""
+
+
 class LokiHandler(logging.Handler):
     """Async logging handler to send logs to Loki/Grafana.
 
@@ -64,10 +76,13 @@ class LokiHandler(logging.Handler):
                         timeout=self.timeout,
                         auth_token=self.auth_token,
                     )
-                except Exception:
+                except Exception as e:
                     # If we can't build the fallback, disable the path
-                    # so we don't retry on every emit.
+                    # so we don't retry on every emit, and surface the
+                    # cause once so operators don't see only the
+                    # downstream "no running event loop" symptom.
                     self._enable_thread_fallback = False
+                    log_send_failure("async", e)
         return self._fallback
 
     def emit(self, record: logging.LogRecord) -> None:
@@ -89,10 +104,10 @@ class LokiHandler(logging.Handler):
         fallback = self._get_thread_fallback()
         if fallback is not None:
             if not fallback.enqueue_payload(payload):
-                log_send_failure("async", RuntimeError("thread fallback queue full"))
+                log_send_failure("async", ThreadFallbackQueueFullError())
             return
 
-        log_send_failure("async", RuntimeError("no running event loop"))
+        log_send_failure("async", NoRunningEventLoopError())
 
     async def _async_send(self, payload: Dict) -> None:
         try:
@@ -139,14 +154,32 @@ class LokiHandler(logging.Handler):
                     pass
             except Exception:
                 pass
-        fallback = getattr(self, "_fallback", None)
-        if fallback is not None:
-            try:
-                fallback.close()
-            except Exception:
-                pass
-            self._fallback = None
-            self._enable_thread_fallback = False
+        fallback_lock = getattr(self, "_fallback_lock", None)
+        if fallback_lock is not None:
+            with fallback_lock:
+                # Flip the gate before joining so a concurrent emit() in
+                # _get_thread_fallback() can't spin up a new worker after
+                # we've torn the current one down.
+                self._enable_thread_fallback = False
+                fallback = self._fallback
+                self._fallback = None
+            if fallback is not None:
+                try:
+                    loop = None
+                    try:
+                        loop = asyncio.get_running_loop()
+                    except RuntimeError:
+                        pass
+                    if loop is not None:
+                        # Joining the worker would block the running
+                        # loop for up to `timeout + 2`s — fire-and-forget
+                        # via the default executor instead, matching the
+                        # session-close pattern above.
+                        loop.run_in_executor(None, fallback.close)
+                    else:
+                        fallback.close()
+                except Exception:
+                    pass
         super().close()
 
     async def aclose(self) -> None:
@@ -164,18 +197,22 @@ class LokiHandler(logging.Handler):
         session = getattr(self, "_session", None)
         if session and not session.closed:
             await session.close()
-        fallback = getattr(self, "_fallback", None)
-        if fallback is not None:
-            try:
-                # `SyncLokiHandler.close()` joins the worker thread for up
-                # to `timeout + 2`s; offload it so we don't block the loop.
-                await asyncio.get_running_loop().run_in_executor(
-                    None, fallback.close
-                )
-            except Exception:
-                pass
-            self._fallback = None
-            self._enable_thread_fallback = False
+        fallback_lock = getattr(self, "_fallback_lock", None)
+        if fallback_lock is not None:
+            with fallback_lock:
+                self._enable_thread_fallback = False
+                fallback = self._fallback
+                self._fallback = None
+            if fallback is not None:
+                try:
+                    # `SyncLokiHandler.close()` joins the worker thread
+                    # for up to `timeout + 2`s; offload so we don't
+                    # block the loop.
+                    await asyncio.get_running_loop().run_in_executor(
+                        None, fallback.close
+                    )
+                except Exception:
+                    pass
         super().close()
 
     def __del__(self):
@@ -190,7 +227,12 @@ class LokiHandler(logging.Handler):
                 pass
         fallback = getattr(self, "_fallback", None)
         if fallback is not None:
+            # Don't call fallback.close() here — it joins the worker
+            # thread for up to `timeout + 2`s, which can stall
+            # interpreter shutdown. Just signal stop and let the
+            # daemon thread exit on its own. Callers that need an
+            # ordered drain should use close()/aclose() explicitly.
             try:
-                fallback.close()
+                fallback._stop.set()
             except Exception:
                 pass
