@@ -32,13 +32,52 @@ def test_emit_creates_task_when_loop_running():
         coro.close()
 
 
-def test_emit_logs_send_failure_when_no_event_loop():
+def test_emit_routes_to_thread_fallback_when_no_event_loop():
     handler = LokiHandler(url="http://loki/push")
+    try:
+        fake_fallback = MagicMock()
+        with patch.object(handler, "_get_thread_fallback", return_value=fake_fallback):
+            handler.emit(make_record())
+        fake_fallback.enqueue_payload.assert_called_once()
+        payload = fake_fallback.enqueue_payload.call_args.args[0]
+        assert "streams" in payload
+    finally:
+        handler.close()
+
+
+def test_emit_logs_send_failure_when_fallback_disabled_and_no_loop():
+    handler = LokiHandler(url="http://loki/push", enable_thread_fallback=False)
     with patch("observability_library.handler.log_send_failure") as failure:
         handler.emit(make_record())
     failure.assert_called_once()
     args, _ = failure.call_args
     assert args[0] == "async"
+
+
+def test_thread_fallback_is_lazy():
+    handler = LokiHandler(url="http://loki/push")
+    assert handler._fallback is None  # not built until needed
+    handler.close()
+
+
+def test_thread_fallback_built_once_and_reused():
+    handler = LokiHandler(url="http://loki/push")
+    try:
+        first = handler._get_thread_fallback()
+        second = handler._get_thread_fallback()
+        assert first is not None
+        assert first is second
+    finally:
+        handler.close()
+
+
+def test_close_tears_down_fallback():
+    handler = LokiHandler(url="http://loki/push")
+    fallback = handler._get_thread_fallback()
+    assert fallback is not None
+    handler.close()
+    # Worker thread should have been signalled to stop; join with timeout.
+    assert not fallback._worker.is_alive() or fallback._stop.is_set()
 
 
 def test_emit_routes_through_handle_error_on_payload_failure():

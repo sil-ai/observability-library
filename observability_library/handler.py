@@ -1,17 +1,26 @@
 import asyncio
 import logging
+import threading
 from typing import Dict, Optional
 
 import aiohttp
 
 from ._payload import build_loki_payload, log_send_failure
+from .sync_handler import SyncLokiHandler
 
 
 class LokiHandler(logging.Handler):
     """Async logging handler to send logs to Loki/Grafana.
 
     Designed for async environments (FastAPI, asyncio). Uses aiohttp for
-    non-blocking HTTP requests and requires a running event loop.
+    non-blocking HTTP requests on the running event loop.
+
+    When `emit` is called from a thread with no running event loop
+    (e.g. work dispatched via `asyncio.to_thread`, or a thread pool
+    inside an otherwise-async app), the record is routed to a lazily
+    initialised `SyncLokiHandler` so it still ships to Loki via a
+    background worker thread. Set `enable_thread_fallback=False` to
+    restore the strict async-only behaviour.
 
     Every non-standard attribute on the `LogRecord` is forwarded as a
     JSON field — pass application fields via `logger.info(..., extra={...})`
@@ -24,6 +33,7 @@ class LokiHandler(logging.Handler):
         labels: Optional[Dict[str, str]] = None,
         timeout: int = 5,
         auth_token: Optional[str] = None,
+        enable_thread_fallback: bool = True,
     ):
         super().__init__()
         self.url = url
@@ -31,6 +41,34 @@ class LokiHandler(logging.Handler):
         self.timeout = timeout
         self.auth_token = auth_token
         self._session: Optional[aiohttp.ClientSession] = None
+        self._enable_thread_fallback = enable_thread_fallback
+        self._fallback: Optional[SyncLokiHandler] = None
+        self._fallback_lock = threading.Lock()
+
+    def _get_thread_fallback(self) -> Optional[SyncLokiHandler]:
+        """Lazily create the sync handler used when no loop is running.
+
+        The fallback is only spawned on first need so async-only callers
+        don't pay for an idle thread + queue.
+        """
+        if not self._enable_thread_fallback:
+            return None
+        if self._fallback is not None:
+            return self._fallback
+        with self._fallback_lock:
+            if self._fallback is None:
+                try:
+                    self._fallback = SyncLokiHandler(
+                        url=self.url,
+                        labels=self.labels,
+                        timeout=self.timeout,
+                        auth_token=self.auth_token,
+                    )
+                except Exception:
+                    # If we can't build the fallback, disable the path
+                    # so we don't retry on every emit.
+                    self._enable_thread_fallback = False
+        return self._fallback
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
@@ -42,10 +80,18 @@ class LokiHandler(logging.Handler):
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            log_send_failure("async", RuntimeError("no running event loop"))
+            loop = None
+
+        if loop is not None:
+            loop.create_task(self._async_send(payload))
             return
 
-        loop.create_task(self._async_send(payload))
+        fallback = self._get_thread_fallback()
+        if fallback is not None:
+            fallback.enqueue_payload(payload)
+            return
+
+        log_send_failure("async", RuntimeError("no running event loop"))
 
     async def _async_send(self, payload: Dict) -> None:
         try:
@@ -92,6 +138,12 @@ class LokiHandler(logging.Handler):
                     pass
             except Exception:
                 pass
+        fallback = getattr(self, "_fallback", None)
+        if fallback is not None:
+            try:
+                fallback.close()
+            except Exception:
+                pass
         super().close()
 
     async def aclose(self) -> None:
@@ -109,6 +161,12 @@ class LokiHandler(logging.Handler):
         session = getattr(self, "_session", None)
         if session and not session.closed:
             await session.close()
+        fallback = getattr(self, "_fallback", None)
+        if fallback is not None:
+            try:
+                fallback.close()
+            except Exception:
+                pass
         super().close()
 
     def __del__(self):
