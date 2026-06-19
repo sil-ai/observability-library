@@ -4,7 +4,8 @@ name: Claude Code Review
 # Trigger it either by:
 #   - commenting "@claude" on a pull request, or
 #   - running this workflow from the Actions tab (Run workflow) and passing a PR number.
-# Requires the repository (or org) secret ANTHROPIC_API_KEY.
+# Requires the repository (or org) secret CLAUDE_CODE_OAUTH_TOKEN
+# (generated with `claude setup-token` using a Claude Pro/Max subscription).
 on:
   issue_comment:
     types: [created]
@@ -42,7 +43,7 @@ jobs:
       - name: Review with Claude
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.inputs.pr_number || github.event.issue.number || github.event.pull_request.number }}
