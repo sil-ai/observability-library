@@ -56,3 +56,46 @@ def test_logging_at_error_level():
     err.assert_called_once()
     # We only call .error — never .warning, .info, etc.
     assert isinstance(_send_failure_logger, logging.Logger)
+
+
+def test_loki_debug_env_var_includes_message(monkeypatch):
+    monkeypatch.setenv("LOKI_DEBUG", "1")
+    with patch.object(_send_failure_logger, "error") as err:
+        log_send_failure("async", TimeoutError("Connection timed out after 30s"))
+    fmt, *args = err.call_args.args
+    rendered = fmt % tuple(args)
+    assert "TimeoutError" in rendered
+    assert "Connection timed out after 30s" in rendered
+
+
+def test_loki_debug_env_var_strips_basic_auth_in_url(monkeypatch):
+    monkeypatch.setenv("LOKI_DEBUG", "1")
+    with patch.object(_send_failure_logger, "error") as err:
+        log_send_failure(
+            "sync",
+            requests.ConnectionError(
+                "HTTPSConnectionPool(host='loki.example', port=443): "
+                "https://user:secret@loki.example/loki/api/v1/push"
+            ),
+        )
+    fmt, *args = err.call_args.args
+    rendered = fmt % tuple(args)
+    assert "user:secret" not in rendered
+    assert "secret" not in rendered
+    assert "loki.example" in rendered
+
+
+def test_loki_debug_off_by_default():
+    # Unset to be safe in case other tests left it set.
+    import os
+    original = os.environ.pop("LOKI_DEBUG", None)
+    try:
+        with patch.object(_send_failure_logger, "error") as err:
+            log_send_failure("async", TimeoutError("Connection timed out"))
+        fmt, *args = err.call_args.args
+        rendered = fmt % tuple(args)
+        assert "Connection timed out" not in rendered
+        assert "TimeoutError" in rendered
+    finally:
+        if original is not None:
+            os.environ["LOKI_DEBUG"] = original

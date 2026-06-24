@@ -53,6 +53,19 @@ class SyncLokiHandler(logging.Handler):
         except Exception:
             self.handleError(record)
 
+    def enqueue_payload(self, payload: Dict) -> bool:
+        """Push a pre-built Loki payload onto the worker queue.
+
+        Used by `LokiHandler` to hand off records when the async dispatch
+        path has no running event loop. Returns True if enqueued, False if
+        the queue is full (silently dropped, like `emit`).
+        """
+        try:
+            self._queue.put_nowait(payload)
+            return True
+        except queue.Full:
+            return False
+
     def _drain(self) -> None:
         headers = {"Content-Type": "application/json"}
         if self.auth_token:
